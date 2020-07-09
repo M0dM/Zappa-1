@@ -264,7 +264,14 @@ class SqsAsyncResponse(LambdaAsyncResponse):
     Serialise the func path and arguments.
     See: https://github.com/Miserlou/Zappa/issues/1647
     """
-    def __init__(self, lambda_function_name=None, aws_region=None, capture_response=False, **kwargs):
+    def __init__(
+        self, 
+        lambda_function_name=None, 
+        aws_region=None, 
+        capture_response=False, 
+        large_messages_payload_bucket=None, 
+        **kwargs
+    ):
 
         self.lambda_function_name = lambda_function_name
         self.aws_region = aws_region
@@ -274,7 +281,6 @@ class SqsAsyncResponse(LambdaAsyncResponse):
         else: # pragma: no cover
             self.client = SQS_CLIENT
 
-        large_messages_payload_bucket = kwargs.get('large_messages_payload_bucket', None)
         self.delay_seconds = kwargs.get('delay_seconds', 0)
 
         if large_messages_payload_bucket is not None:
@@ -320,7 +326,7 @@ class SqsAsyncResponse(LambdaAsyncResponse):
                     self.client, "large_payload_support", None
                 ) is not None and
                 len(payload) > SQS_LARGE_ASYNC_PAYLOAD_LIMIT
-            ) else (
+            ) or (
                 len(payload) > SQS_ASYNC_PAYLOAD_LIMIT
             )
         ):
@@ -478,12 +484,17 @@ def task(*args, **kwargs):
         lambda_function_name_arg = None
         aws_region_arg = None
         delay_seconds = 0
+        large_messages_payload_bucket = None
 
     else:  # Arguments were passed
         service = kwargs.get('service', 'lambda')
         lambda_function_name_arg = kwargs.get('remote_aws_lambda_function_name')
         aws_region_arg = kwargs.get('remote_aws_region')
         delay_seconds = kwargs.get('delay_seconds', 0)
+        large_messages_payload_bucket = kwargs.get(
+            'large_messages_payload_bucket', 
+            None
+        )
 
     capture_response = kwargs.get('capture_response', False)
 
@@ -515,7 +526,14 @@ def task(*args, **kwargs):
             aws_region = aws_region_arg or os.environ.get('AWS_REGION')
 
             if delay_seconds > 0 and service != 'sqs':
-                raise ValueError('delay_seconds only works in combination with the sqs async service')
+                raise ValueError(
+                    'delay_seconds only works in combination with the sqs async service'
+                )
+
+            if large_messages_payload_bucket is not None and service != 'sqs':
+                raise ValueError(
+                    'large_messages_payload_bucket only works in combination with the sqs async service'
+                )
 
             if (service in ASYNC_CLASSES) and (lambda_function_name):
                 send_result = ASYNC_CLASSES[service](lambda_function_name=lambda_function_name,
