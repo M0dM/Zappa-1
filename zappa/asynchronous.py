@@ -86,6 +86,7 @@ Discussion of this comes from:
 """
 
 import boto3
+import sqs_extended_client
 import botocore
 from functools import update_wrapper, wraps
 import importlib
@@ -271,8 +272,11 @@ class SqsAsyncResponse(LambdaAsyncResponse):
         else: # pragma: no cover
             self.client = SQS_CLIENT
 
+        large_messages_payload_bucket = kwargs.get('large_messages_payload_bucket', None)
         self.delay_seconds = kwargs.get('delay_seconds', 0)
 
+        if large_messages_payload_bucket is not None:
+            self.client.large_payload_support = large_messages_payload_bucket
 
         if kwargs.get('queue_url'):
             self.queue_url = kwargs.get('queue_url')

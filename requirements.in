@@ -9,6 +9,7 @@ python-dateutil<2.7.0
 python-slugify
 PyYAML
 future
+sqs-extended-client
 # previous version don't work with urllib3 1.24
 requests>=2.20.0
 six
