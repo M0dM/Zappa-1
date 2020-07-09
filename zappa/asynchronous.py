@@ -316,7 +316,9 @@ class SqsAsyncResponse(LambdaAsyncResponse):
         
         if (
             (
-                self.client.large_payload_support is not None and
+                getattr(
+                    self.client, "large_payload_support", None
+                ) is not None and
                 len(payload) > SQS_LARGE_ASYNC_PAYLOAD_LIMIT
             ) else (
                 len(payload) > SQS_ASYNC_PAYLOAD_LIMIT
