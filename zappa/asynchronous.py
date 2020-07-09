@@ -124,7 +124,7 @@ except botocore.exceptions.NoRegionError as e: # pragma: no cover
 LAMBDA_ASYNC_PAYLOAD_LIMIT = 256000
 SNS_ASYNC_PAYLOAD_LIMIT = 256000
 SQS_ASYNC_PAYLOAD_LIMIT = 256000
-SQS_LARGE_ASYNC_PAYLOAD_LIMIT = 2 000 000 000  # 2GB
+SQS_LARGE_ASYNC_PAYLOAD_LIMIT = 2000000000  # 2GB
 
 class AsyncException(Exception): # pragma: no cover
     """ Simple exception class for async tasks. """
