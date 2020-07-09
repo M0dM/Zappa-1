@@ -123,6 +123,8 @@ except botocore.exceptions.NoRegionError as e: # pragma: no cover
 
 LAMBDA_ASYNC_PAYLOAD_LIMIT = 256000
 SNS_ASYNC_PAYLOAD_LIMIT = 256000
+SQS_ASYNC_PAYLOAD_LIMIT = 256000
+SQS_LARGE_ASYNC_PAYLOAD_LIMIT = 2 000 000 000  # 2GB
 
 class AsyncException(Exception): # pragma: no cover
     """ Simple exception class for async tasks. """
@@ -311,8 +313,17 @@ class SqsAsyncResponse(LambdaAsyncResponse):
         """
         message['zappaAsyncCommand'] = 'zappa.asynchronous.route_sqs_task'
         payload = json.dumps(message)
-        if len(payload) > 256000: # pragma: no cover
+        
+        if (
+            (
+                self.client.large_payload_support is not None and
+                len(payload) > SQS_LARGE_ASYNC_PAYLOAD_LIMIT
+            ) else (
+                len(payload) > SQS_ASYNC_PAYLOAD_LIMIT
+            )
+        ):
             raise AsyncException("Payload too large for SQS")
+        
         self.response = self.client.send_message(
                                 QueueUrl=self.queue_url,
                                 MessageBody=payload,
@@ -508,7 +519,9 @@ def task(*args, **kwargs):
                 send_result = ASYNC_CLASSES[service](lambda_function_name=lambda_function_name,
                                                      aws_region=aws_region,
                                                      capture_response=capture_response,
-                                                     delay_seconds=delay_seconds).send(task_path, args, kwargs)
+                                                     delay_seconds=delay_seconds,
+                                                     large_messages_payload_bucket=large_messages_payload_bucket
+                                                    ).send(task_path, args, kwargs)
                 return send_result
             else:
                 return func(*args, **kwargs)
