@@ -108,7 +108,7 @@ try:
     aws_session = boto3.Session()
     LAMBDA_CLIENT = aws_session.client('lambda')
     SNS_CLIENT = aws_session.client('sns')
-    SQS_CLIENT = aws_session.client('sqs')
+    SQS_CLIENT = boto3.client('sqs')
     STS_CLIENT = aws_session.client('sts')
     DYNAMODB_CLIENT = aws_session.client('dynamodb')
 except botocore.exceptions.NoRegionError as e: # pragma: no cover
@@ -275,11 +275,7 @@ class SqsAsyncResponse(LambdaAsyncResponse):
 
         self.lambda_function_name = lambda_function_name
         self.aws_region = aws_region
-
-        if kwargs.get('boto_session'):
-            self.client = kwargs.get('boto_session').client('sqs')
-        else: # pragma: no cover
-            self.client = SQS_CLIENT
+        self.client = SQS_CLIENT
 
         self.delay_seconds = kwargs.get('delay_seconds', 0)
 
