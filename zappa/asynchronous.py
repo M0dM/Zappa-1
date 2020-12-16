@@ -315,16 +315,19 @@ class SqsAsyncResponse(LambdaAsyncResponse):
         """
         message['zappaAsyncCommand'] = 'zappa.asynchronous.route_sqs_task'
         payload = json.dumps(message)
-        
+
         if (
-            (
-                getattr(
-                    self.client, "large_payload_support", None
-                ) is not None and
-                len(payload) > SQS_LARGE_ASYNC_PAYLOAD_LIMIT
-            ) or (
-                len(payload) > SQS_ASYNC_PAYLOAD_LIMIT
-            )
+            getattr(
+                self.client, "large_payload_support", None
+            ) is not None and
+            len(payload) > SQS_LARGE_ASYNC_PAYLOAD_LIMIT
+        ):
+            raise AsyncException("Payload too large for SQS")
+        elif (
+            getattr(
+                self.client, "large_payload_support", None
+            ) is None and
+            len(payload) > SQS_ASYNC_PAYLOAD_LIMIT
         ):
             raise AsyncException("Payload too large for SQS")
         
@@ -383,6 +386,15 @@ def run_message(message):
     'task_path', 'args', and 'kwargs' used by lambda routing
     and a 'command' in handler.py
     """
+    if (
+        type(message) is list and
+        message[0] == "com.amazon.sqs.javamessaging.MessageS3Pointer"
+    ):
+        client = boto3.client('s3')
+        bucket = message[1]["s3BucketName"]
+        key = message[1]["s3Key"]
+        obj = client.get_object(Bucket=bucket, Key=key)
+        message = json.loads(obj['Body'].read())
     if message.get('capture_response', False):
         DYNAMODB_CLIENT.put_item(
             TableName=ASYNC_RESPONSE_TABLE,

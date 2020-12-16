@@ -309,6 +309,11 @@ class LambdaHandler:
         elif 'eventSource' in record and record.get('eventSource') == 'aws:sqs':
             try:
                 message = json.loads(record['body'])
+                if (
+                    type(message) is list and
+                    message[0] == "com.amazon.sqs.javamessaging.MessageS3Pointer"
+                ):
+                    return "zappa.asynchronous.route_sqs_task"
                 if message.get('zappaAsyncCommand'):
                     return message['zappaAsyncCommand']
             except ValueError:
