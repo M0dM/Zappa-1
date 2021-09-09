@@ -85,6 +85,10 @@ Discussion of this comes from:
 
 """
 
+import boto3
+import sqs_extended_client
+import botocore
+from functools import update_wrapper, wraps
 import importlib
 import inspect
 import json
@@ -108,6 +112,7 @@ try:
     aws_session = boto3.Session()
     LAMBDA_CLIENT = aws_session.client("lambda")
     SNS_CLIENT = aws_session.client("sns")
+    SQS_CLIENT = boto3.client('sqs')
     STS_CLIENT = aws_session.client("sts")
     DYNAMODB_CLIENT = aws_session.client("dynamodb")
 except botocore.exceptions.NoRegionError as e:  # pragma: no cover
@@ -122,6 +127,8 @@ except botocore.exceptions.NoRegionError as e:  # pragma: no cover
 
 LAMBDA_ASYNC_PAYLOAD_LIMIT = 256000
 SNS_ASYNC_PAYLOAD_LIMIT = 256000
+SQS_ASYNC_PAYLOAD_LIMIT = 256000
+SQS_LARGE_ASYNC_PAYLOAD_LIMIT = 2000000000  # 2GB
 
 
 class AsyncException(Exception):  # pragma: no cover
@@ -167,6 +174,7 @@ class LambdaAsyncResponse:
             self.response_id = None
 
         self.capture_response = capture_response
+
 
     def send(self, task_path, args, kwargs):
         """
@@ -254,6 +262,7 @@ class SnsAsyncResponse(LambdaAsyncResponse):
 
         self.capture_response = capture_response
 
+
     def _send(self, message):
         """
         Given a message, publish to this topic.
@@ -331,7 +340,6 @@ def run_message(message):
 
     return response
 
-
 ##
 # Execution interfaces and classes
 ##
@@ -387,7 +395,7 @@ def task(*args, **kwargs):
             Further requirements:
             func must be an independent top-level function.
                  i.e. not a class method or an anonymous function
-        service (str): either 'lambda' or 'sns'
+        service (str): either 'lambda', 'sns' or 'sqs'
         remote_aws_lambda_function_name (str): the name of a remote lambda function to call with this task
         remote_aws_region (str): the name of a remote region to make lambda/sns calls against
 
@@ -406,9 +414,14 @@ def task(*args, **kwargs):
         aws_region_arg = None
 
     else:  # Arguments were passed
-        service = kwargs.get("service", "lambda")
-        lambda_function_name_arg = kwargs.get("remote_aws_lambda_function_name")
-        aws_region_arg = kwargs.get("remote_aws_region")
+        service = kwargs.get('service', 'lambda')
+        lambda_function_name_arg = kwargs.get('remote_aws_lambda_function_name')
+        aws_region_arg = kwargs.get('remote_aws_region')
+        delay_seconds = kwargs.get('delay_seconds', 0)
+        large_messages_payload_bucket = kwargs.get(
+            'large_messages_payload_bucket', 
+            None
+        )
 
     capture_response = kwargs.get("capture_response", False)
 
@@ -436,17 +449,26 @@ def task(*args, **kwargs):
                 When outside of Lambda, the func passed to @task is run and we
                 return the actual value.
             """
-            lambda_function_name = lambda_function_name_arg or os.environ.get(
-                "AWS_LAMBDA_FUNCTION_NAME"
-            )
-            aws_region = aws_region_arg or os.environ.get("AWS_REGION")
+            lambda_function_name = lambda_function_name_arg or os.environ.get('AWS_LAMBDA_FUNCTION_NAME')
+            aws_region = aws_region_arg or os.environ.get('AWS_REGION')
+
+            if delay_seconds > 0 and service != 'sqs':
+                raise ValueError(
+                    'delay_seconds only works in combination with the sqs async service'
+                )
+
+            if large_messages_payload_bucket is not None and service != 'sqs':
+                raise ValueError(
+                    'large_messages_payload_bucket only works in combination with the sqs async service'
+                )
 
             if (service in ASYNC_CLASSES) and (lambda_function_name):
-                send_result = ASYNC_CLASSES[service](
-                    lambda_function_name=lambda_function_name,
-                    aws_region=aws_region,
-                    capture_response=capture_response,
-                ).send(task_path, args, kwargs)
+                send_result = ASYNC_CLASSES[service](lambda_function_name=lambda_function_name,
+                                                     aws_region=aws_region,
+                                                     capture_response=capture_response,
+                                                     delay_seconds=delay_seconds,
+                                                     large_messages_payload_bucket=large_messages_payload_bucket
+                                                    ).send(task_path, args, kwargs)
                 return send_result
             else:
                 return func(*args, **kwargs)
@@ -465,7 +487,14 @@ def task_sns(func):
     """
     SNS-based task dispatcher. Functions the same way as task()
     """
-    return task(func, service="sns")
+    return task(func, service='sns')
+
+
+def task_sqs(func):
+    """
+    SQS-based task dispatcher. Functions the same way as task()
+    """
+    return task(func, service='sqs')
 
 
 ##

@@ -1,13 +1,11 @@
-black
-boto3-stubs
+-r requirements.in
+
 coveralls
 Django
-django-stubs
 flake8
 Flask
 mock
-mypy
 nose
 nose-timer
 placebo
-isort
+
