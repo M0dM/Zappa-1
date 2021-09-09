@@ -100,7 +100,7 @@ from functools import update_wrapper, wraps
 import boto3
 import botocore
 
-from .utilities import get_topic_name
+from .utilities import get_topic_name, get_queue_name
 
 try:
     from zappa_settings import ASYNC_RESPONSE_TABLE
@@ -275,6 +275,87 @@ class SnsAsyncResponse(LambdaAsyncResponse):
         self.sent = self.response.get("MessageId")
 
 
+class SqsAsyncResponse(LambdaAsyncResponse):
+    """
+    Send a SQS message to a specified SQS queue.
+    Serialise the func path and arguments.
+    See: https://github.com/Miserlou/Zappa/issues/1647
+    """
+    def __init__(
+        self,
+        lambda_function_name=None,
+        aws_region=None,
+        capture_response=False,
+        large_messages_payload_bucket=None,
+        **kwargs
+    ):
+
+        self.lambda_function_name = lambda_function_name
+        self.aws_region = aws_region
+        self.client = SQS_CLIENT
+
+        self.delay_seconds = kwargs.get('delay_seconds', 0)
+
+        if large_messages_payload_bucket is not None:
+            self.client.large_payload_support = large_messages_payload_bucket
+
+        if kwargs.get('queue_url'):
+            self.queue_url = kwargs.get('queue_url')
+        else:
+            self.queue_url = self.client.get_queue_url(QueueName=get_queue_name(self.lambda_function_name))['QueueUrl']
+
+
+        # Issue: https://github.com/Miserlou/Zappa/issues/1209
+        # TODO: Refactor
+        self.capture_response = capture_response
+        if capture_response:
+            if ASYNC_RESPONSE_TABLE is None:
+                print(
+                    "Warning! Attempted to capture a response without "
+                    "async_response_table configured in settings (you won't "
+                    "capture async responses)."
+                )
+                capture_response = False
+                self.response_id = "MISCONFIGURED"
+
+            else:
+                self.response_id = str(uuid.uuid4())
+        else:
+            self.response_id = None
+
+        self.capture_response = capture_response
+
+
+    def _send(self, message):
+        """
+        Given a message, publish to this topic.
+        """
+        message['zappaAsyncCommand'] = 'zappa.asynchronous.route_sqs_task'
+        payload = json.dumps(message)
+
+        if (
+            getattr(
+                self.client, "large_payload_support", None
+            ) is not None and
+            len(payload) > SQS_LARGE_ASYNC_PAYLOAD_LIMIT
+        ):
+            raise AsyncException("Payload too large for SQS")
+        elif (
+            getattr(
+                self.client, "large_payload_support", None
+            ) is None and
+            len(payload) > SQS_ASYNC_PAYLOAD_LIMIT
+        ):
+            raise AsyncException("Payload too large for SQS")
+        
+        self.response = self.client.send_message(
+                                QueueUrl=self.queue_url,
+                                MessageBody=payload,
+                                DelaySeconds=self.delay_seconds
+                            )
+        self.sent = self.response.get('MessageId')
+
+
 ##
 # Aync Routers
 ##
@@ -282,6 +363,7 @@ class SnsAsyncResponse(LambdaAsyncResponse):
 ASYNC_CLASSES = {
     "lambda": LambdaAsyncResponse,
     "sns": SnsAsyncResponse,
+    "sqs": SqsAsyncResponse
 }
 
 
@@ -301,6 +383,16 @@ def route_sns_task(event, context):
     """
     record = event["Records"][0]
     message = json.loads(record["Sns"]["Message"])
+    return run_message(message)
+
+
+def route_sqs_task(event, context):
+    """
+    Get SQS message, deserialize the message,
+    imports the function, calls the function with args
+    """
+    record = event['Records'][0]
+    message = json.loads(record['body'])
     return run_message(message)
 
 
@@ -409,9 +501,11 @@ def task(*args, **kwargs):
         func = args[0]
 
     if not kwargs:  # Default Values
-        service = "lambda"
+        service = 'lambda'
         lambda_function_name_arg = None
         aws_region_arg = None
+        delay_seconds = 0
+        large_messages_payload_bucket = None
 
     else:  # Arguments were passed
         service = kwargs.get('service', 'lambda')
@@ -419,7 +513,7 @@ def task(*args, **kwargs):
         aws_region_arg = kwargs.get('remote_aws_region')
         delay_seconds = kwargs.get('delay_seconds', 0)
         large_messages_payload_bucket = kwargs.get(
-            'large_messages_payload_bucket', 
+            'large_messages_payload_bucket',
             None
         )
 
