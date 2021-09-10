@@ -254,6 +254,74 @@ def get_event_source(
         def __init__(self):
             return
 
+    class ExtendedS3EventSource(kappa.event_source.s3.S3EventSource):
+        """Trying to handle s3 event source without kappa."""
+
+        # def __init__(self, context, config):
+        #     import pdb; pdb.set_trace()
+        #     super().__init__(context, config)
+        #     self._s3 = kappa.awsclient.create_client('s3', context.session)
+        #     self._lambda = kappa.awsclient.create_client("lambda", context.session)
+
+        def _make_notification_id(self, function_name):
+            import pdb; pdb.set_trace()
+            return 'Kappa-%s-notification' % function_name
+
+        # def _get_uuid(self, function):
+        #     uuid = None
+        #     response = self._lambda.call(
+        #         "list_event_source_mappings",
+        #         FunctionName=function.name,
+        #         EventSourceArn=self.arn,
+        #     )
+        #     LOG.debug(response)
+        #     if len(response["EventSourceMappings"]) > 0:
+        #         uuid = response["EventSourceMappings"][0]["UUID"]
+        #     return uuid
+
+        # def add(self, function):
+        #     try:
+        #         LOG.exception("Adding s3 event source")
+        #         raise NotImplementedError()
+        #     except Exception:
+        #         LOG.exception("Unable to add event source")
+
+        # def enable(self, function):
+        #     try:
+        #         LOG.exception("Enabling s3 event source")
+        #         raise NotImplementedError()
+        #     except Exception:
+        #         LOG.exception("Unable to enable event source")
+
+        # def disable(self, function):
+        #     try:
+        #         LOG.exception("Disabling s3 event source")
+        #         raise NotImplementedError()
+        #     except Exception:
+        #         LOG.exception("Unable to disable event source")
+
+        # def update(self, function):
+        #     try:
+        #         LOG.exception("Updating s3 event source")
+        #         raise NotImplementedError()
+        #     except Exception:
+        #         LOG.exception("Unable to update event source")
+
+        # def remove(self, function):
+        #     try:
+        #         LOG.exception("Removing s3 event source")
+        #         raise NotImplementedError()
+        #     except Exception:
+        #         LOG.exception("Unable to remove event source")
+
+        # def status(self, function):
+        #     try:
+        #         LOG.exception("Retrieving s3 event source status")
+        #         raise NotImplementedError()
+        #     except Exception:
+        #         LOG.exception("Unable to retrieve event source status")
+
+
     # Mostly adapted from kappa - will probably be replaced by kappa support
     class SqsEventSource(kappa.event_source.base.EventSource):
         def __init__(self, context, config):
@@ -378,7 +446,7 @@ def get_event_source(
     event_source_map = {
         "dynamodb": kappa.event_source.dynamodb_stream.DynamoDBStreamEventSource,
         "kinesis": kappa.event_source.kinesis.KinesisEventSource,
-        "s3": kappa.event_source.s3.S3EventSource,
+        "s3": ExtendedS3EventSource,
         "sns": ExtendedSnsEventSource,
         "sqs": SqsEventSource,
         "events": kappa.event_source.cloudwatch.CloudWatchEventSource,
