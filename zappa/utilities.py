@@ -255,6 +255,7 @@ def get_event_source(
         def __init__(self):
             return
 
+
     class ExtendedS3EventSource(kappa.event_source.s3.S3EventSource):
         """Trying to handle s3 event source without kappa."""
 
@@ -296,7 +297,7 @@ def get_event_source(
                 )
                 existingPermission = self.arn in str(response['Policy'])
             except Exception:
-                print('S3 event source permission not available')
+                LOG.debug('S3 event source permission not available')
 
             if not existingPermission:
                 response = self._lambda.call('add_permission',
@@ -305,9 +306,9 @@ def get_event_source(
                                             Action='lambda:InvokeFunction',
                                             Principal='s3.amazonaws.com',
                                             SourceArn=self.arn)
-                print(response)
+                LOG.debug(response)
             else:
-                print('S3 event source permission already exists')
+                LOG.debug('S3 event source permission already exists')
 
             new_notification_spec = self._get_notification_spec(function)
 
@@ -316,16 +317,16 @@ def get_event_source(
                 response = self._s3.call(
                     'get_bucket_notification_configuration',
                     Bucket=self._get_bucket_name())
-                print(response)
+                LOG.debug(response)
                 notification_spec_list = response.get('LambdaFunctionConfigurations', [])
             except Exception as exc:
-                print('Unable to get existing S3 event source notification configurations')
+                LOG.debug('Unable to get existing S3 event source notification configurations')
 
             if new_notification_spec not in notification_spec_list:
                 notification_spec_list.append(new_notification_spec)
             else:       
                 notification_spec_list=[]
-                print("S3 event source already exists")
+                LOG.debug("S3 event source already exists")
 
 
             if notification_spec_list:
@@ -339,9 +340,9 @@ def get_event_source(
                         'put_bucket_notification_configuration',
                         Bucket=self._get_bucket_name(),
                         NotificationConfiguration=notification_configuration)
-                    print(response)
+                    LOG.debug(response)
                 except Exception as exc:
-                    print(exc.response)
+                    LOG.exception(exc.response)
                     LOG.exception('Unable to add S3 event source')
 
         enable = add
@@ -375,14 +376,14 @@ def get_event_source(
         disable = remove
 
         def status(self, function):
-            print(f'status for s3 notification for {function.name}')
+            LOG.debug(f'status for s3 notification for {function.name}')
 
             notification_spec = self._get_notification_spec(function)
 
             response = self._s3.call(
                 'get_bucket_notification_configuration',
                 Bucket=self._get_bucket_name())
-            print(response)
+            LOG.debug(response)
 
             if 'LambdaFunctionConfigurations' not in response:
                 return None
