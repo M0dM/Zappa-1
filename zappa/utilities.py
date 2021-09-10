@@ -1,3 +1,4 @@
+import uuid
 import calendar
 import datetime
 import fnmatch
@@ -257,69 +258,143 @@ def get_event_source(
     class ExtendedS3EventSource(kappa.event_source.s3.S3EventSource):
         """Trying to handle s3 event source without kappa."""
 
-        # def __init__(self, context, config):
-        #     import pdb; pdb.set_trace()
-        #     super().__init__(context, config)
-        #     self._s3 = kappa.awsclient.create_client('s3', context.session)
-        #     self._lambda = kappa.awsclient.create_client("lambda", context.session)
+        def __init__(self, context, config):
+            super(ExtendedS3EventSource, self).__init__(context, config)
+            self._s3 = kappa.awsclient.create_client('s3', context.session)
+            self._lambda = kappa.awsclient.create_client('lambda', context.session)
 
         def _make_notification_id(self, function_name):
-            import pdb; pdb.set_trace()
             return 'Kappa-%s-notification' % function_name
 
-        # def _get_uuid(self, function):
-        #     uuid = None
-        #     response = self._lambda.call(
-        #         "list_event_source_mappings",
-        #         FunctionName=function.name,
-        #         EventSourceArn=self.arn,
-        #     )
-        #     LOG.debug(response)
-        #     if len(response["EventSourceMappings"]) > 0:
-        #         uuid = response["EventSourceMappings"][0]["UUID"]
-        #     return uuid
+        def _get_bucket_name(self):
+            return self.arn.split(':')[-1]
 
-        # def add(self, function):
-        #     try:
-        #         LOG.exception("Adding s3 event source")
-        #         raise NotImplementedError()
-        #     except Exception:
-        #         LOG.exception("Unable to add event source")
+        def _get_notification_spec(self, function):
+                notification_spec = {
+                    'Id': self._make_notification_id(function.name),
+                    'Events': [e for e in self._config['events']],
+                    'LambdaFunctionArn': function.arn + ':' + function.name.split(':')[0],
+                }
 
-        # def enable(self, function):
-        #     try:
-        #         LOG.exception("Enabling s3 event source")
-        #         raise NotImplementedError()
-        #     except Exception:
-        #         LOG.exception("Unable to enable event source")
+                # Add S3 key filters
+                if 'key_filters' in self._config:
+                    filters_spec = { 'Key' : { 'FilterRules' : [] } }
+                    for filter in self._config['key_filters']:
+                        if 'type' in filter and 'value' in filter and filter['type'] in ('prefix', 'suffix'):
+                            rule = { 'Name' : filter['type'].capitalize(), 'Value' : filter['value'] }
+                            filters_spec['Key']['FilterRules'].append(rule)
+                    notification_spec['Filter'] = filters_spec
 
-        # def disable(self, function):
-        #     try:
-        #         LOG.exception("Disabling s3 event source")
-        #         raise NotImplementedError()
-        #     except Exception:
-        #         LOG.exception("Unable to disable event source")
+                return notification_spec
 
-        # def update(self, function):
-        #     try:
-        #         LOG.exception("Updating s3 event source")
-        #         raise NotImplementedError()
-        #     except Exception:
-        #         LOG.exception("Unable to update event source")
+        def add(self, function):
+            existingPermission={}
+            try:
+                response = self._lambda.call(
+                    'get_policy',
+                    FunctionName=function.arn + ':' + function.name.split(':')[0]
+                )
+                existingPermission = self.arn in str(response['Policy'])
+            except Exception:
+                print('S3 event source permission not available')
 
-        # def remove(self, function):
-        #     try:
-        #         LOG.exception("Removing s3 event source")
-        #         raise NotImplementedError()
-        #     except Exception:
-        #         LOG.exception("Unable to remove event source")
+            if not existingPermission:
+                response = self._lambda.call('add_permission',
+                                            FunctionName=function.arn + ':' + function.name.split(':')[0],
+                                            StatementId=str(uuid.uuid4()),
+                                            Action='lambda:InvokeFunction',
+                                            Principal='s3.amazonaws.com',
+                                            SourceArn=self.arn)
+                print(response)
+            else:
+                print('S3 event source permission already exists')
 
-        # def status(self, function):
-        #     try:
-        #         LOG.exception("Retrieving s3 event source status")
-        #         raise NotImplementedError()
-        #     except Exception:
-        #         LOG.exception("Unable to retrieve event source status")
+            new_notification_spec = self._get_notification_spec(function)
+
+            notification_spec_list = []
+            try:
+                response = self._s3.call(
+                    'get_bucket_notification_configuration',
+                    Bucket=self._get_bucket_name())
+                print(response)
+                notification_spec_list = response.get('LambdaFunctionConfigurations', [])
+            except Exception as exc:
+                print('Unable to get existing S3 event source notification configurations')
+
+            if new_notification_spec not in notification_spec_list:
+                notification_spec_list.append(new_notification_spec)
+            else:       
+                notification_spec_list=[]
+                print("S3 event source already exists")
+
+
+            if notification_spec_list:
+
+                notification_configuration = {
+                    'LambdaFunctionConfigurations': notification_spec_list
+                }
+
+                try:
+                    response = self._s3.call(
+                        'put_bucket_notification_configuration',
+                        Bucket=self._get_bucket_name(),
+                        NotificationConfiguration=notification_configuration)
+                    print(response)
+                except Exception as exc:
+                    print(exc.response)
+                    LOG.exception('Unable to add S3 event source')
+
+        enable = add
+
+        def update(self, function):
+            self.add(function)
+
+        def remove(self, function):
+
+            notification_spec = self._get_notification_spec(function)
+
+            LOG.debug('removing s3 notification')
+            response = self._s3.call(
+                'get_bucket_notification_configuration',
+                Bucket=self._get_bucket_name())
+            LOG.debug(response)
+
+            if 'LambdaFunctionConfigurations' in response:
+                notification_spec_list = response['LambdaFunctionConfigurations']
+
+                if notification_spec in notification_spec_list:
+                    notification_spec_list.remove(notification_spec)
+                    response['LambdaFunctionConfigurations'] = notification_spec_list
+                    del response['ResponseMetadata']
+                    response = self._s3.call(
+                        'put_bucket_notification_configuration',
+                        Bucket=self._get_bucket_name(),
+                        NotificationConfiguration=response)
+                    LOG.debug(response)
+
+        disable = remove
+
+        def status(self, function):
+            print(f'status for s3 notification for {function.name}')
+
+            notification_spec = self._get_notification_spec(function)
+
+            response = self._s3.call(
+                'get_bucket_notification_configuration',
+                Bucket=self._get_bucket_name())
+            print(response)
+
+            if 'LambdaFunctionConfigurations' not in response:
+                return None
+            
+            notification_spec_list = response['LambdaFunctionConfigurations']
+            if notification_spec not in notification_spec_list:
+                return None
+            
+            return {
+                'EventSourceArn': self.arn,
+                'State': 'Enabled'
+            }
 
 
     # Mostly adapted from kappa - will probably be replaced by kappa support
@@ -386,7 +461,7 @@ def get_event_source(
                         "update_event_source_mapping",
                         BatchSize=self.batch_size,
                         Enabled=self.enabled,
-                        FunctionName=function.arn,
+                        FunctionName=function.arn + ':' + function.name.split(':')[0],
                     )
                     LOG.debug(response)
                 except Exception:
