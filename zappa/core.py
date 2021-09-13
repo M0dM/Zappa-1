@@ -2912,7 +2912,6 @@ class Zappa:
         # create or update the role's policies if needed
         policy = self.iam.RolePolicy(self.role_name, "zappa-permissions")
         try:
-            import pdb; pdb.set_trace()
             if policy.policy_document != attach_policy_obj:
                 print(
                     "Updating zappa-permissions policy on "

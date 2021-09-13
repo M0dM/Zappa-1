@@ -553,7 +553,6 @@ def get_event_source(
         def update(self, function):
             response = None
             uuid = self._get_uuid(function)
-            import pdb; pdb.set_trace()
             if uuid:
                 try:
                     response = self._lambda.call(
