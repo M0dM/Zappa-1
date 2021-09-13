@@ -68,6 +68,7 @@ ASSUME_POLICY = """{
         "Service": [
           "apigateway.amazonaws.com",
           "lambda.amazonaws.com",
+          "kafka.amazonaws.com",
           "events.amazonaws.com"
         ]
       },
@@ -115,7 +116,13 @@ ATTACH_POLICY = """{
                 "ec2:DescribeNetworkInterfaces",
                 "ec2:DetachNetworkInterface",
                 "ec2:ModifyNetworkInterfaceAttribute",
-                "ec2:ResetNetworkInterfaceAttribute"
+                "ec2:ResetNetworkInterfaceAttribute",
+                "ec2:DescribeSecurityGroups",
+                "ec2:DescribeVpcs",
+                "ec2:DescribeSubnets",
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
             ],
             "Resource": "*"
         },
@@ -146,6 +153,13 @@ ATTACH_POLICY = """{
                 "sqs:*"
             ],
             "Resource": "arn:aws:sqs:*:*:*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "kafka:*"
+            ],
+            "Resource": "arn:aws:kafka:*:*:*"
         },
         {
             "Effect": "Allow",
@@ -2898,6 +2912,7 @@ class Zappa:
         # create or update the role's policies if needed
         policy = self.iam.RolePolicy(self.role_name, "zappa-permissions")
         try:
+            import pdb; pdb.set_trace()
             if policy.policy_document != attach_policy_obj:
                 print(
                     "Updating zappa-permissions policy on "
@@ -2994,7 +3009,7 @@ class Zappa:
         # The stream sources - DynamoDB, Kinesis and SQS - are working differently than the other services (pull vs push)
         # and do not require event permissions. They do require additional permissions on the Lambda roles though.
         # http://docs.aws.amazon.com/lambda/latest/dg/lambda-api-permissions-ref.html
-        pull_services = ["dynamodb", "kinesis", "sqs"]
+        pull_services = ["dynamodb", "kinesis", "sqs", "kafka"]
 
         # XXX: Not available in Lambda yet.
         # We probably want to execute the latest code.
