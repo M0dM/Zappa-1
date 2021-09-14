@@ -499,7 +499,7 @@ def get_event_source(
             super().__init__(context, config)
             self._lambda = kappa.awsclient.create_client("lambda", context.session)
 
-        def _get_uuid(self, function):
+        def _get_uuid(self, function, topics):
             uuid = None
             response = self._lambda.call(
                 "list_event_source_mappings",
@@ -507,8 +507,9 @@ def get_event_source(
                 EventSourceArn=self.arn,
             )
             LOG.debug(response)
-            if len(response["EventSourceMappings"]) > 0:
-                uuid = response["EventSourceMappings"][0]["UUID"]
+            for event_source in response["EventSourceMappings"]:
+                if event_source["Topics"] == topics:
+                    uuid = event_source["UUID"]
             return uuid
 
         def add(self, function):                
@@ -531,7 +532,7 @@ def get_event_source(
             try:
                 response = self._lambda.call(
                     "update_event_source_mapping",
-                    UUID=self._get_uuid(function),
+                    UUID=self._get_uuid(function, self._config["topics"]),
                     Enabled=self.enabled,
                 )
                 LOG.debug(response)
@@ -552,7 +553,7 @@ def get_event_source(
 
         def update(self, function):
             response = None
-            uuid = self._get_uuid(function)
+            uuid = self._get_uuid(function, self._config["topics"])
             if uuid:
                 try:
                     response = self._lambda.call(
@@ -569,7 +570,7 @@ def get_event_source(
 
         def remove(self, function):
             response = None
-            uuid = self._get_uuid(function)
+            uuid = self._get_uuid(function, self._config["topics"])
             if uuid:
                 response = self._lambda.call("delete_event_source_mapping", UUID=uuid)
                 LOG.debug(response)
@@ -578,11 +579,11 @@ def get_event_source(
         def status(self, function):
             response = None
             LOG.debug("getting status for event source %s", self.arn)
-            uuid = self._get_uuid(function)
+            uuid = self._get_uuid(function, self._config["topics"])
             if uuid:
                 try:
                     response = self._lambda.call(
-                        "get_event_source_mapping", UUID=self._get_uuid(function)
+                        "get_event_source_mapping", UUID=self._get_uuid(function, self._config["topics"])
                     )
                     LOG.debug(response)
                 except botocore.exceptions.ClientError:
