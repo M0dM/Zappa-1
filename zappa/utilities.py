@@ -1,3 +1,4 @@
+import uuid
 import calendar
 import datetime
 import fnmatch
@@ -216,6 +217,11 @@ def get_topic_name(lambda_name):
     return "%s-zappa-async" % lambda_name
 
 
+
+def get_queue_name(lambda_name):
+    """ Queue name generation """
+    return get_topic_name(lambda_name)
+
 ##
 # Event sources / Kappa
 ##
@@ -250,6 +256,149 @@ def get_event_source(
     class PseudoFunction:
         def __init__(self):
             return
+
+
+    class ExtendedS3EventSource(kappa.event_source.s3.S3EventSource):
+        """Trying to handle s3 event source without kappa."""
+
+        def __init__(self, context, config):
+            super(ExtendedS3EventSource, self).__init__(context, config)
+            self._s3 = kappa.awsclient.create_client('s3', context.session)
+            self._lambda = kappa.awsclient.create_client('lambda', context.session)
+
+        def _make_notification_id(self, function_name):
+            return 'Kappa-%s-notification' % function_name
+
+        def _get_bucket_name(self):
+            return self.arn.split(':')[-1]
+
+        def _get_notification_spec(self, function):
+                notification_spec = {
+                    'Id': self._make_notification_id(function.name),
+                    'Events': [e for e in self._config['events']],
+                    'LambdaFunctionArn': function.arn + ':' + function.name.split(':')[0],
+                }
+
+                # Add S3 key filters
+                if 'key_filters' in self._config:
+                    filters_spec = { 'Key' : { 'FilterRules' : [] } }
+                    for filter in self._config['key_filters']:
+                        if 'type' in filter and 'value' in filter and filter['type'] in ('prefix', 'suffix'):
+                            rule = { 'Name' : filter['type'].capitalize(), 'Value' : filter['value'] }
+                            filters_spec['Key']['FilterRules'].append(rule)
+                    notification_spec['Filter'] = filters_spec
+
+                return notification_spec
+
+        def add(self, function):
+            existingPermission={}
+            try:
+                response = self._lambda.call(
+                    'get_policy',
+                    FunctionName=function.arn + ':' + function.name.split(':')[0]
+                )
+                existingPermission = self.arn in str(response['Policy'])
+            except Exception:
+                LOG.debug('S3 event source permission not available')
+
+            if not existingPermission:
+                response = self._lambda.call('add_permission',
+                                            FunctionName=function.arn + ':' + function.name.split(':')[0],
+                                            StatementId=str(uuid.uuid4()),
+                                            Action='lambda:InvokeFunction',
+                                            Principal='s3.amazonaws.com',
+                                            SourceArn=self.arn)
+                LOG.debug(response)
+            else:
+                LOG.debug('S3 event source permission already exists')
+
+            new_notification_spec = self._get_notification_spec(function)
+
+            notification_spec_list = []
+            try:
+                response = self._s3.call(
+                    'get_bucket_notification_configuration',
+                    Bucket=self._get_bucket_name())
+                LOG.debug(response)
+                notification_spec_list = response.get('LambdaFunctionConfigurations', [])
+            except Exception as exc:
+                LOG.debug('Unable to get existing S3 event source notification configurations')
+
+            if new_notification_spec not in notification_spec_list:
+                notification_spec_list.append(new_notification_spec)
+            else:       
+                notification_spec_list=[]
+                LOG.debug("S3 event source already exists")
+
+
+            if notification_spec_list:
+
+                notification_configuration = {
+                    'LambdaFunctionConfigurations': notification_spec_list
+                }
+
+                try:
+                    response = self._s3.call(
+                        'put_bucket_notification_configuration',
+                        Bucket=self._get_bucket_name(),
+                        NotificationConfiguration=notification_configuration)
+                    LOG.debug(response)
+                except Exception as exc:
+                    LOG.exception(exc.response)
+                    LOG.exception('Unable to add S3 event source')
+
+        enable = add
+
+        def update(self, function):
+            self.add(function)
+
+        def remove(self, function):
+
+            notification_spec = self._get_notification_spec(function)
+
+            LOG.debug('removing s3 notification')
+            response = self._s3.call(
+                'get_bucket_notification_configuration',
+                Bucket=self._get_bucket_name())
+            LOG.debug(response)
+
+            if 'LambdaFunctionConfigurations' in response:
+                notification_spec_list = response['LambdaFunctionConfigurations']
+
+                if notification_spec in notification_spec_list:
+                    notification_spec_list.remove(notification_spec)
+                    response['LambdaFunctionConfigurations'] = notification_spec_list
+                    del response['ResponseMetadata']
+                    response = self._s3.call(
+                        'put_bucket_notification_configuration',
+                        Bucket=self._get_bucket_name(),
+                        NotificationConfiguration=response)
+                    LOG.debug(response)
+
+        disable = remove
+
+        def status(self, function):
+            LOG.debug(f'status for s3 notification for {function.name}')
+
+            notification_spec = self._get_notification_spec(function)
+
+            response = self._s3.call(
+                'get_bucket_notification_configuration',
+                Bucket=self._get_bucket_name())
+            LOG.debug(response)
+
+            if 'LambdaFunctionConfigurations' not in response:
+                return None
+            
+            notification_spec_list = response['LambdaFunctionConfigurations']
+            if notification_spec not in notification_spec_list:
+                return None
+            
+            return {
+                'EventSourceArn': self.arn,
+                'State': 'Enabled'
+            }
+
 
     # Mostly adapted from kappa - will probably be replaced by kappa support
     class SqsEventSource(kappa.event_source.base.EventSource):
@@ -315,7 +464,7 @@ def get_event_source(
                         "update_event_source_mapping",
                         BatchSize=self.batch_size,
                         Enabled=self.enabled,
-                        FunctionName=function.arn,
+                        FunctionName=function.arn + ':' + function.name.split(':')[0],
                     )
                     LOG.debug(response)
                 except Exception:
@@ -337,6 +486,106 @@ def get_event_source(
                 try:
                     response = self._lambda.call(
                         "get_event_source_mapping", UUID=self._get_uuid(function)
+                    )
+                    LOG.debug(response)
+                except botocore.exceptions.ClientError:
+                    LOG.debug("event source %s does not exist", self.arn)
+                    response = None
+            else:
+                LOG.debug("No UUID for event source %s", self.arn)
+            return response
+
+    # Mostly adapted from kappa - will probably be replaced by kappa support
+    class KafkaEventSource(kappa.event_source.base.EventSource):
+        def __init__(self, context, config):
+            super().__init__(context, config)
+            self._lambda = kappa.awsclient.create_client("lambda", context.session)
+
+        def _get_uuid(self, function, topics):
+            uuid = None
+            response = self._lambda.call(
+                "list_event_source_mappings",
+                FunctionName=function.name,
+                EventSourceArn=self.arn,
+            )
+            LOG.debug(response)
+            for event_source in response["EventSourceMappings"]:
+                if event_source["Topics"] == topics:
+                    uuid = event_source["UUID"]
+            return uuid
+
+        def add(self, function):                
+            try:
+                response = self._lambda.call(
+                    "create_event_source_mapping",
+                    FunctionName=function.name,
+                    EventSourceArn=self.arn,
+                    BatchSize=self.batch_size,
+                    Topics=self._config["topics"],
+                    StartingPosition=self.starting_position,
+                    Enabled=self.enabled,
+                )
+                LOG.debug(response)
+            except Exception:
+                LOG.exception("Unable to add event source")
+
+        def enable(self, function):
+            self._config["enabled"] = True
+            try:
+                response = self._lambda.call(
+                    "update_event_source_mapping",
+                    UUID=self._get_uuid(function, self._config["topics"]),
+                    Enabled=self.enabled,
+                )
+                LOG.debug(response)
+            except Exception:
+                LOG.exception("Unable to enable event source")
+
+        def disable(self, function):
+            self._config["enabled"] = False
+            try:
+                response = self._lambda.call(
+                    "update_event_source_mapping",
+                    FunctionName=function.name,
+                    Enabled=self.enabled,
+                )
+                LOG.debug(response)
+            except Exception:
+                LOG.exception("Unable to disable event source")
+
+        def update(self, function):
+            response = None
+            uuid = self._get_uuid(function, self._config["topics"])
+            if uuid:
+                try:
+                    response = self._lambda.call(
+                        "update_event_source_mapping",
+                        BatchSize=self.batch_size,
+                        Topics=self._config["topics"],
+                        StartingPosition=self.starting_position,
+                        Enabled=self.enabled,
+                        FunctionName=function.arn + ':' + function.name.split(':')[0],
+                    )
+                    LOG.debug(response)
+                except Exception:
+                    LOG.exception("Unable to update event source")
+
+        def remove(self, function):
+            response = None
+            uuid = self._get_uuid(function, self._config["topics"])
+            if uuid:
+                response = self._lambda.call("delete_event_source_mapping", UUID=uuid)
+                LOG.debug(response)
+            return response
+
+        def status(self, function):
+            response = None
+            LOG.debug("getting status for event source %s", self.arn)
+            uuid = self._get_uuid(function, self._config["topics"])
+            if uuid:
+                try:
+                    response = self._lambda.call(
+                        "get_event_source_mapping", UUID=self._get_uuid(function, self._config["topics"])
                     )
                     LOG.debug(response)
                 except botocore.exceptions.ClientError:
@@ -375,9 +624,10 @@ def get_event_source(
     event_source_map = {
         "dynamodb": kappa.event_source.dynamodb_stream.DynamoDBStreamEventSource,
         "kinesis": kappa.event_source.kinesis.KinesisEventSource,
-        "s3": kappa.event_source.s3.S3EventSource,
+        "s3": ExtendedS3EventSource,
         "sns": ExtendedSnsEventSource,
         "sqs": SqsEventSource,
+        "kafka": KafkaEventSource,
         "events": kappa.event_source.cloudwatch.CloudWatchEventSource,
     }
 

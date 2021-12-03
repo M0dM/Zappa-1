@@ -39,6 +39,7 @@ from .utilities import (
     conflicts_with_a_neighbouring_module,
     contains_python_files_or_subdirs,
     copytree,
+    get_queue_name,
     get_topic_name,
     get_venv_from_python_version,
     human_size,
@@ -67,6 +68,7 @@ ASSUME_POLICY = """{
         "Service": [
           "apigateway.amazonaws.com",
           "lambda.amazonaws.com",
+          "kafka.amazonaws.com",
           "events.amazonaws.com"
         ]
       },
@@ -114,7 +116,13 @@ ATTACH_POLICY = """{
                 "ec2:DescribeNetworkInterfaces",
                 "ec2:DetachNetworkInterface",
                 "ec2:ModifyNetworkInterfaceAttribute",
-                "ec2:ResetNetworkInterfaceAttribute"
+                "ec2:ResetNetworkInterfaceAttribute",
+                "ec2:DescribeSecurityGroups",
+                "ec2:DescribeVpcs",
+                "ec2:DescribeSubnets",
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
             ],
             "Resource": "*"
         },
@@ -145,6 +153,13 @@ ATTACH_POLICY = """{
                 "sqs:*"
             ],
             "Resource": "arn:aws:sqs:*:*:*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "kafka:*"
+            ],
+            "Resource": "arn:aws:kafka:*:*:*"
         },
         {
             "Effect": "Allow",
@@ -360,6 +375,7 @@ class Zappa:
             self.cloudwatch = self.boto_client("cloudwatch")
             self.route53 = self.boto_client("route53")
             self.sns_client = self.boto_client("sns")
+            self.sqs_client = self.boto_client('sqs')
             self.cf_client = self.boto_client("cloudformation")
             self.dynamodb_client = self.boto_client("dynamodb")
             self.cognito_client = self.boto_client("cognito-idp")
@@ -2416,7 +2432,7 @@ class Zappa:
 
         # build a fresh template
         self.cf_template = troposphere.Template()
-        self.cf_template.set_description("Automatically generated with Zappa")
+        # self.cf_template.add_description("Automatically generated with Zappa")
         self.cf_api_resources = []
         self.cf_parameters = {}
 
@@ -2994,7 +3010,7 @@ class Zappa:
         # The stream sources - DynamoDB, Kinesis and SQS - are working differently than the other services (pull vs push)
         # and do not require event permissions. They do require additional permissions on the Lambda roles though.
         # http://docs.aws.amazon.com/lambda/latest/dg/lambda-api-permissions-ref.html
-        pull_services = ["dynamodb", "kinesis", "sqs"]
+        pull_services = ["dynamodb", "kinesis", "sqs", "kafka"]
 
         # XXX: Not available in Lambda yet.
         # We probably want to execute the latest code.
@@ -3329,6 +3345,67 @@ class Zappa:
                 self.sns_client.delete_topic(TopicArn=sub["TopicArn"])
                 removed_arns.append(sub["TopicArn"])
         return removed_arns
+
+    ##
+    # Async / SQS
+    ##
+
+    def create_async_sqs_queue(self, lambda_name, lambda_arn, lambda_timeout):
+        """
+        Create the SQS-based async queue.
+        """
+        queue_name = get_queue_name(lambda_name)
+        # No problem if the queue already exists, unless their attributes differ.
+        queue = self.sqs_client.create_queue(
+            QueueName=queue_name,
+            Attributes={
+                # Recommendation is to have visibility timeout >= 6 * lambda timeout.
+                # See https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html#events-sqs-queueconfig
+                'VisibilityTimeout': str(6 * lambda_timeout)
+            }
+        )
+        queue_arn = self.sqs_client.get_queue_attributes(
+            QueueUrl=queue['QueueUrl'],
+            AttributeNames=['All']
+        )['Attributes']['QueueArn']
+
+        # Add rule for SQS queue as an event source
+        event_source_result = add_event_source(
+            event_source={
+                "arn": queue_arn,
+                "batch_size": 1,
+                "enabled": True,
+            },
+            lambda_arn=lambda_arn,
+            target_function=None,
+            boto_session=self.boto_session
+        )
+        return queue_arn, event_source_result
+
+    def remove_async_sqs_queue(self, lambda_name, lambda_arn):
+        """
+        Remove the async SQS queue.
+        """
+        queue_name = get_queue_name(lambda_name)
+        try:
+            queue_url = self.sqs_client.get_queue_url(QueueName=queue_name)['QueueUrl']
+        except self.sqs_client.exceptions.QueueDoesNotExist:
+            return
+        queue_arn = self.sqs_client.get_queue_attributes(
+            QueueUrl=queue_url,
+            AttributeNames=['All']
+        )['Attributes']['QueueArn']
+
+        remove_event_source(
+            event_source={
+                "arn": queue_arn
+            },
+            lambda_arn=lambda_arn,
+            target_function=None,
+            boto_session=self.boto_session
+        )
+        self.sqs_client.delete_queue(QueueUrl=queue_url)
+        return queue_url
 
     ###
     # Async / DynamoDB

@@ -322,13 +322,24 @@ class LambdaHandler:
                     return message["command"]
             except ValueError:
                 pass
-            arn = record["Sns"].get("TopicArn")
-        elif "dynamodb" in record or "kinesis" in record:
-            arn = record.get("eventSourceARN")
-        elif "eventSource" in record and record.get("eventSource") == "aws:sqs":
-            arn = record.get("eventSourceARN")
-        elif "s3" in record:
-            arn = record["s3"]["bucket"]["arn"]
+            arn = record['Sns'].get('TopicArn')
+        elif 'dynamodb' in record or 'kinesis' in record:
+            arn = record.get('eventSourceARN')
+        elif 'eventSource' in record and record.get('eventSource') == 'aws:sqs':
+            try:
+                message = json.loads(record['body'])
+                if (
+                    type(message) is list and
+                    message[0] == "com.amazon.sqs.javamessaging.MessageS3Pointer"
+                ):
+                    return "zappa.asynchronous.route_sqs_task"
+                if message.get('zappaAsyncCommand'):
+                    return message['zappaAsyncCommand']
+            except ValueError:
+                pass
+            arn = record.get('eventSourceARN')
+        elif 's3' in record:
+            arn = record['s3']['bucket']['arn']
 
         if arn:
             return self.settings.AWS_EVENT_MAPPING.get(arn)
