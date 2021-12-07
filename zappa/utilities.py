@@ -330,12 +330,10 @@ def get_event_source(
                 notification_spec_list=[]
                 LOG.debug("S3 event source already exists")
 
-
             if notification_spec_list:
-
-                notification_configuration = {
-                    'LambdaFunctionConfigurations': notification_spec_list
-                }
+                del(response['ResponseMetadata'])
+                notification_configuration = response
+                notification_configuration['LambdaFunctionConfigurations'] = notification_spec_list
 
                 try:
                     response = self._s3.call(
