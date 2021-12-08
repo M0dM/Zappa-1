@@ -39,7 +39,7 @@ six = "*"
 toml = "*"
 tqdm = "*"
 troposphere = ">=3.0"
-Werkzeug = "*"
+Werkzeug = "<1.0"
 wheel = "*"
 wsgi-request-logger = "*"
 
